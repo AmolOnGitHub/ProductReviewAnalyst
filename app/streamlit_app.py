@@ -10,8 +10,11 @@ if str(ROOT) not in sys.path:
 load_dotenv(ROOT / ".env")
 
 
+import pandas as pd
 import streamlit as st
 from sqlalchemy import text
+from typing import Tuple
+import plotly.express as px
 
 from src.data_loader import load_reviews_csv
 from src.user_service import authenticate_user, create_user
@@ -19,19 +22,46 @@ from src.db import init_db, SessionLocal, db_healthcheck
 from src.analytics_df import build_analytics_df
 from src.category_service import upsert_categories
 from src.models import Category, User, UserCategoryAccess
-from src.access_control import set_user_categories
+from src.access_control import set_user_categories, get_allowed_categories
+from src.analytics_access import load_analytics_df_for_user
+from src.metrics import category_metrics
+from src.plots import plot_nps_by_category, plot_rating_distribution, plot_avg_rating_by_category
+from src.sentiment_cache_service import analyze_reviews_with_cache
 
 
-# Streamlit Config
+## Streamlit Config
 st.set_page_config(page_title="Review Analytics MVP", layout="wide")
 
 
-# Session State 
+## Cached Helpers
+@st.cache_data(show_spinner=False)
+def _load_raw_df(csv_path: str) -> pd.DataFrame:
+    return load_reviews_csv(csv_path).df
+
+
+@st.cache_data(show_spinner=False)
+def _build_analytics_df(csv_path: str) -> pd.DataFrame:
+    raw = _load_raw_df(csv_path)
+    return build_analytics_df(raw)
+
+
+@st.cache_data(show_spinner=False)
+def _filter_df_by_categories(analytics_df: pd.DataFrame, allowed_categories: Tuple[str, ...]) -> pd.DataFrame:
+    # allowed_categories must be a tuple for hashing/caching
+    return analytics_df[analytics_df["category"].isin(allowed_categories)]
+
+
+@st.cache_data(show_spinner=False)
+def _compute_category_metrics(filtered_df: pd.DataFrame) -> pd.DataFrame:
+    return category_metrics(filtered_df)
+
+
+## Session State 
 if "user" not in st.session_state:
     st.session_state.user = None
 
 
-# Login Gate
+## Login Gate
 if st.session_state.user is None:
     st.title("Login")
 
@@ -55,9 +85,9 @@ if st.session_state.user is None:
                     st.error("Invalid credentials")
 
     st.stop()
+    
 
-
-# Sidebar
+## Sidebar
 st.sidebar.write(f"Logged in as: {st.session_state.user['email']}")
 st.sidebar.write(f"Role: {st.session_state.user['role']}")
 
@@ -66,12 +96,12 @@ if st.sidebar.button("Logout"):
     st.rerun()
 
 
-# Main Page
+## Main Page
 st.title("Review Analytics MVP — Dataset Check")
 csv_path = st.text_input("CSV path", value="./data/amazon_products.csv")
 
 
-# Admin only tools
+## Admin only tools
 if st.session_state.user["role"] == "admin":
     with st.expander("Developer tools"):
 
@@ -126,7 +156,7 @@ if st.session_state.user["role"] == "admin":
             st.write(f"Total categories: {len(categories)}")
             st.dataframe(
                 [{"id": c.id, "name": c.name} for c in categories],
-                use_container_width=True,
+                width='stretch',
             )
 
 
@@ -220,7 +250,7 @@ if st.session_state.user["role"] == "admin":
                 st.success("Category access updated")
 
 
-# Dataset Preview
+## Dataset Preview
 if st.button("Load dataset"):
     try:
         result = load_reviews_csv(csv_path)
@@ -242,7 +272,7 @@ if st.button("Load dataset"):
             st.metric("Non-null reviews.rating", f"{df['reviews.rating'].notna().sum():,}")
 
         st.subheader("Preview (first 50 rows)")
-        st.dataframe(df.head(50), use_container_width=True)
+        st.dataframe(df.head(50), width='stretch')
 
         st.subheader("Ratings distribution (raw)")
         if "reviews.rating" in df.columns:
@@ -250,3 +280,119 @@ if st.button("Load dataset"):
 
     except Exception as e:
         st.exception(e)
+
+
+## Category Metrics
+st.subheader("Category metrics (ratings + NPS)")
+
+if st.button("Compute metrics"):
+    with SessionLocal() as db:
+        df = load_analytics_df_for_user(
+            db=db,
+            user_id=st.session_state.user["id"],
+            user_role=st.session_state.user["role"],
+            csv_path=csv_path,
+        )
+
+    mdf = category_metrics(df)
+
+    st.write(f"Categories visible to you: {mdf['category'].nunique()}")
+    st.dataframe(mdf, width='stretch')
+
+    # Optional: quick global metrics over visible data
+    if not df.empty:
+        st.markdown("**Overall (visible data):**")
+        overall_nps = ((df["rating"] >= 4).sum() / len(df) - (df["rating"] <= 2).sum() / len(df)) * 100
+        st.write({
+            "reviews": int(len(df)),
+            "avg_rating": float(df["rating"].mean()),
+            "nps": float(overall_nps),
+        })
+
+
+## Visualizations
+st.subheader("Visualizations")
+
+# Controls live OUTSIDE any button so they persist across reruns
+top_n = st.slider("Top N categories (by review count)", 5, 52, 15)
+
+with SessionLocal() as db:
+    role = st.session_state.user["role"]
+    user_id = st.session_state.user["id"]
+
+    analytics_df = _build_analytics_df(csv_path)
+
+    if role == "admin":
+        visible_df = analytics_df
+        visible_categories = tuple(sorted(analytics_df["category"].dropna().unique()))
+    else:
+        allowed = get_allowed_categories(db, user_id)
+        visible_categories = tuple(sorted(allowed))
+        visible_df = _filter_df_by_categories(analytics_df, visible_categories)
+
+mdf = _compute_category_metrics(visible_df)
+
+if mdf.empty:
+    st.info("No data available for your current access.")
+    st.stop()
+
+mdf_top = mdf.sort_values("review_count", ascending=False).head(top_n)
+
+# NPS by category
+fig_nps = px.bar(mdf_top, x="category", y="nps", title="NPS by Category")
+fig_nps.update_layout(xaxis_title="Category", yaxis_title="NPS", xaxis_tickangle=-45)
+st.plotly_chart(fig_nps, width='stretch')
+
+# Avg rating by category
+fig_avg = px.bar(mdf_top, x="category", y="avg_rating", title="Average Rating by Category")
+fig_avg.update_layout(xaxis_title="Category", yaxis_title="Average Rating", xaxis_tickangle=-45)
+st.plotly_chart(fig_avg, width='stretch')
+
+# Rating distribution for selected category
+category_options = sorted(mdf["category"].dropna().unique())
+selected_cat = st.selectbox("Select category for rating distribution", category_options)
+
+sub = visible_df[visible_df["category"] == selected_cat].dropna(subset=["rating"])
+fig_hist = px.histogram(sub, x="rating", nbins=5, title=f"Rating Distribution — {selected_cat}")
+fig_hist.update_layout(xaxis_title="Rating", yaxis_title="Count")
+st.plotly_chart(fig_hist, width='stretch')
+
+
+## Sentiment Analysis
+st.subheader("Why customers feel this way")
+
+selected_category_for_sentiment = st.selectbox(
+    "Select category for sentiment analysis",
+    sorted(mdf["category"].unique()),
+    key="sentiment_category",
+)
+
+max_reviews = st.slider(
+    "Max reviews to analyze (cost control)",
+    10, 200, 50,
+)
+
+if st.button("Analyze sentiment"):
+    reviews = (
+        visible_df[
+            (visible_df["category"] == selected_category_for_sentiment)
+            & (visible_df["review_text"].notna())
+        ]["review_text"]
+        .tolist()
+    )
+
+    with st.spinner("Analyzing reviews with Gemini..."):
+        with SessionLocal() as db:
+            sentiment_out = analyze_reviews_with_cache(
+                db,
+                reviews,
+                max_reviews=max_reviews,
+                batch_size=10,
+                timeout_s=15.0,
+            )
+
+        st.write(sentiment_out)
+        st.dataframe(
+            [{"reason": r, "count": c} for r, c in sentiment_out["top_reasons"]],
+            width='stretch',
+        )

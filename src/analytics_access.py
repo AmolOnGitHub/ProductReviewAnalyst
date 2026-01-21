@@ -27,7 +27,7 @@ def load_analytics_df_for_user(
 
     allowed_categories = get_allowed_categories(db, user_id)
 
-    # IMPORTANT: enforce access here
+    # IMPORTANT: enforce access
     df = df[df["category"].isin(allowed_categories)]
 
     return df

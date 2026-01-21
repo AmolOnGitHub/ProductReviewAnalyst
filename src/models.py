@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     Boolean,
+    BigInteger,
     Column,
     DateTime,
     ForeignKey,
@@ -99,5 +100,22 @@ class MessageTrace(Base):
 
     # Plot specs (e.g., plotly JSON, or params used to regenerate)
     plot_payload = Column(JSONB, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ReviewSentimentCache(Base):
+    __tablename__ = "review_sentiment_cache"
+
+    id = Column(BigInteger, primary_key=True)
+    # sha256 hash of normalized review text
+    text_hash = Column(String(64), unique=True, nullable=False, index=True)
+
+    model = Column(String(128), nullable=False)
+
+    sentiment = Column(String(16), nullable=False)  # positive|negative|neutral
+    reasons = Column(JSONB, nullable=False)         # list[str]
+
+    latency_ms = Column(Integer, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
