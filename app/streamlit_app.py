@@ -1,19 +1,131 @@
 import sys
 from pathlib import Path
-import streamlit as st
+from dotenv import load_dotenv
 
+# Path + .env setup
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-                    
-from src.data_loader import load_reviews_csv
 
+load_dotenv(ROOT / ".env")
+
+
+import streamlit as st
+from sqlalchemy import text
+
+from src.data_loader import load_reviews_csv
+from src.user_service import authenticate_user
+from src.db import init_db, SessionLocal, db_healthcheck
+from src.analytics_df import build_analytics_df
+from src.category_service import upsert_categories
+from src.models import Category
+
+
+# Streamlit Config
 st.set_page_config(page_title="Review Analytics MVP", layout="wide")
 
-st.title("Review Analytics MVP — Dataset Check")
 
+# Session State 
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+
+# Login Gate
+if st.session_state.user is None:
+    st.title("Login")
+
+    with st.form("login"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+
+        if submitted:
+            with SessionLocal() as db:
+                user = authenticate_user(db, email, password)
+                if user:
+                    st.session_state.user = {
+                        "id": user.id,
+                        "email": user.email,
+                        "role": user.role,
+                    }
+                    st.success("Logged in")
+                    st.rerun()
+                else:
+                    st.error("Invalid credentials")
+
+    st.stop()
+
+
+# Sidebar
+st.sidebar.write(f"Logged in as: {st.session_state.user['email']}")
+st.sidebar.write(f"Role: {st.session_state.user['role']}")
+
+if st.sidebar.button("Logout"):
+    st.session_state.user = None
+    st.rerun()
+
+
+# Main Page
+st.title("Review Analytics MVP — Dataset Check")
 csv_path = st.text_input("CSV path", value="./data/amazon_products.csv")
 
+
+# Admin only tools
+if st.session_state.user["role"] == "admin":
+    with st.expander("Developer tools"):
+        st.subheader("Database health")
+
+        if db_healthcheck():
+            st.success("PostgreSQL connection OK")
+        else:
+            st.error("Database connection failed")
+
+        st.subheader("Database setup")
+        if st.button("Initialize DB tables"):
+            init_db()
+            st.success("Tables created / verified")
+
+        if st.button("Show table counts"):
+            with SessionLocal() as s:
+                counts = {}
+                for t in [
+                    "users",
+                    "categories",
+                    "user_category_access",
+                    "conversations",
+                    "message_traces",
+                ]:
+                    counts[t] = s.execute(
+                        text(f"SELECT COUNT(*) FROM {t}")
+                    ).scalar()
+            st.write(counts)
+
+        if st.button("Ingest categories into DB"):
+            with SessionLocal() as db:
+                result = load_reviews_csv(csv_path)
+                analytics_df = build_analytics_df(result.df)
+
+                categories = set(analytics_df["category"].dropna().unique())
+                created = upsert_categories(db, categories)
+
+                st.success(f"Categories ingested. New categories added: {created}")
+                st.write(f"Total unique categories: {len(categories)}")
+
+        with st.expander("View categories"):
+            with SessionLocal() as db:
+                categories = (
+                    db.query(Category)
+                    .order_by(Category.name.asc())
+                    .all()
+                )
+            st.write(f"Total categories: {len(categories)}")
+            st.dataframe(
+                [{"id": c.id, "name": c.name} for c in categories],
+                use_container_width=True,
+            )
+
+
+# Dataset Preview
 if st.button("Load dataset"):
     try:
         result = load_reviews_csv(csv_path)
