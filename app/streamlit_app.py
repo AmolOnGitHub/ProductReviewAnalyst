@@ -14,11 +14,12 @@ import streamlit as st
 from sqlalchemy import text
 
 from src.data_loader import load_reviews_csv
-from src.user_service import authenticate_user
+from src.user_service import authenticate_user, create_user
 from src.db import init_db, SessionLocal, db_healthcheck
 from src.analytics_df import build_analytics_df
 from src.category_service import upsert_categories
-from src.models import Category
+from src.models import Category, User, UserCategoryAccess
+from src.access_control import set_user_categories
 
 
 # Streamlit Config
@@ -73,6 +74,8 @@ csv_path = st.text_input("CSV path", value="./data/amazon_products.csv")
 # Admin only tools
 if st.session_state.user["role"] == "admin":
     with st.expander("Developer tools"):
+
+        # DB Healthcheck
         st.subheader("Database health")
 
         if db_healthcheck():
@@ -80,6 +83,7 @@ if st.session_state.user["role"] == "admin":
         else:
             st.error("Database connection failed")
 
+        # DB Initialization
         st.subheader("Database setup")
         if st.button("Initialize DB tables"):
             init_db()
@@ -100,6 +104,7 @@ if st.session_state.user["role"] == "admin":
                     ).scalar()
             st.write(counts)
 
+        # Category Ingestion
         if st.button("Ingest categories into DB"):
             with SessionLocal() as db:
                 result = load_reviews_csv(csv_path)
@@ -123,6 +128,96 @@ if st.session_state.user["role"] == "admin":
                 [{"id": c.id, "name": c.name} for c in categories],
                 use_container_width=True,
             )
+
+
+        # Create Analyst User
+        st.subheader("Create analyst")
+
+        with SessionLocal() as db:
+            categories = db.query(Category).order_by(Category.name).all()
+
+        with st.form("create_analyst_form"):
+            analyst_email = st.text_input("Analyst email")
+            analyst_password = st.text_input("Analyst temporary password", type="password")
+
+            assign_now = st.checkbox("Assign categories now", value=True)
+
+            selected_category_ids = []
+            if assign_now:
+                selected_category_ids = st.multiselect(
+                    "Allowed categories",
+                    options=[c.id for c in categories],
+                    format_func=lambda cid: next(c.name for c in categories if c.id == cid),
+                )
+
+            submitted = st.form_submit_button("Create analyst")
+
+            if submitted:
+                if not analyst_email or not analyst_password:
+                    st.error("Email and password required.")
+                else:
+                    try:
+                        with SessionLocal() as db:
+                            user = create_user(db, analyst_email, analyst_password, role="analyst")
+                            if assign_now and selected_category_ids:
+                                set_user_categories(db, user.id, selected_category_ids)
+
+                        st.success("Analyst created.")
+                        st.info("Share the temporary password with the analyst and rotate it later (we'll add change-password).")
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.exception(e)
+
+
+        # Analyst Category Access Management
+        st.subheader("Analyst category access")
+
+        with SessionLocal() as db:
+            analysts = (
+                db.query(User)
+                .filter(User.role == "analyst", User.is_active.is_(True))
+                .all()
+            )
+            categories = db.query(Category).order_by(Category.name).all()
+
+        if not analysts:
+            st.info("No analysts found.")
+        else:
+            analyst_email = st.selectbox(
+                "Select analyst",
+                options=[a.email for a in analysts],
+            )
+
+            selected_analyst = next(
+                a for a in analysts if a.email == analyst_email # type: ignore
+            )
+
+            with SessionLocal() as db:
+                current_ids = {
+                    r.category_id
+                    for r in db.query(UserCategoryAccess)
+                    .filter(UserCategoryAccess.user_id == selected_analyst.id)
+                    .all()
+                }
+
+            selected_category_ids = st.multiselect(
+                "Allowed categories",
+                options=[c.id for c in categories],
+                default=list(current_ids),
+                format_func=lambda cid: next(
+                    c.name for c in categories if c.id == cid
+                ),
+            )
+
+            if st.button("Save category access"):
+                with SessionLocal() as db:
+                    set_user_categories(
+                        db,
+                        selected_analyst.id,
+                        selected_category_ids,
+                    )
+                st.success("Category access updated")
 
 
 # Dataset Preview
