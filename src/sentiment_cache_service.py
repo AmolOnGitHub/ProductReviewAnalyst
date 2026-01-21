@@ -119,24 +119,29 @@ def analyze_reviews_with_cache(
 
             # Fail closed on missing result
             sentiment = "neutral"
-            rs = []
-            if o:
-                sentiment = o.get("sentiment") if o.get("sentiment") in {"positive","negative","neutral"} else "neutral"
-                rs = o.get("reasons") if isinstance(o.get("reasons"), list) else []
+            rs: list[str] = []
+
+            if isinstance(o, dict):
+                s = o.get("sentiment")
+                if s in {"positive", "negative", "neutral"}:
+                    sentiment = s
+
+                rlist = o.get("reasons")
+                if isinstance(rlist, list):
+                    rs = [r for r in rlist if isinstance(r, str)]
 
             upsert_cache_row(
                 db,
                 h=h,
                 model=MODEL_NAME,
                 sentiment=sentiment,
-                reasons=[r for r in rs if isinstance(r, str)][:3],
+                reasons=rs[:3],
                 latency_ms=latency_ms,
             )
-            newly_cached += 1
 
             sentiments[sentiment] += 1
             for rr in rs:
-                if isinstance(rr, str) and rr.strip():
+                if rr.strip():
                     reasons[rr.strip().lower()] += 1
 
         db.commit()
