@@ -28,10 +28,12 @@ from src.metrics import category_metrics
 from src.plots import plot_nps_by_category, plot_rating_distribution, plot_avg_rating_by_category
 from src.sentiment_cache_service import analyze_reviews_with_cache
 from src.trace_service import get_or_create_conversation, log_trace
+
 from src.llm.router import route_tool
+from src.llm.response_writer import write_response
+
 from src.tools.validator import validate_tool_call
 from src.tools.execute import run_tool
-
 
 ## Streamlit Config
 st.set_page_config(page_title="Review Analytics MVP", layout="wide")
@@ -50,8 +52,12 @@ def _build_analytics_df(csv_path: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _filter_df_by_categories(analytics_df: pd.DataFrame, allowed_categories: Tuple[str, ...]) -> pd.DataFrame:
-    # allowed_categories must be a tuple for hashing/caching
+def _filter_df_by_categories(
+    analytics_df: pd.DataFrame,
+    allowed_categories: Tuple[str, ...],
+    access_version: int,
+) -> pd.DataFrame:
+    # access_version intentionally unused; it busts cache when access changes
     return analytics_df[analytics_df["category"].isin(allowed_categories)]
 
 
@@ -63,6 +69,12 @@ def _compute_category_metrics(filtered_df: pd.DataFrame) -> pd.DataFrame:
 ## Session State 
 if "user" not in st.session_state:
     st.session_state.user = None
+
+if "plot_state" not in st.session_state:
+    st.session_state.plot_state = {
+        "top_n": 15,
+        "rating_dist_category": None,
+    }
 
 
 ## Login Gate
@@ -94,6 +106,12 @@ if st.session_state.user is None:
 ## Sidebar
 st.sidebar.write(f"Logged in as: {st.session_state.user['email']}")
 st.sidebar.write(f"Role: {st.session_state.user['role']}")
+if st.session_state.user["role"] != "admin":
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.id == st.session_state.user["id"]).first()
+        st.sidebar.write(f"Access version: {user.access_version if user else 0}")
+
+
 
 if st.sidebar.button("Logout"):
     st.session_state.user = None
@@ -253,6 +271,16 @@ if st.session_state.user["role"] == "admin":
                     )
                 st.success("Category access updated")
 
+            st.subheader("Users (access versions)")
+
+            with SessionLocal() as db:
+                users = db.query(User).order_by(User.role.asc(), User.email.asc()).all()
+
+            st.dataframe(
+                [{"email": u.email, "role": u.role, "is_active": u.is_active, "access_version": u.access_version} for u in users],
+                width='stretch',  # if you haven’t switched yet
+            )
+
 
 ## Dataset Preview
 if st.button("Load dataset"):
@@ -328,11 +356,18 @@ with SessionLocal() as db:
 
     if role == "admin":
         visible_df = analytics_df
-        visible_categories = tuple(sorted(analytics_df["category"].dropna().unique()))
     else:
         allowed = get_allowed_categories(db, user_id)
-        visible_categories = tuple(sorted(allowed))
-        visible_df = _filter_df_by_categories(analytics_df, visible_categories)
+
+        # fetch access_version (cache-buster for access changes)
+        user = db.query(User).filter(User.id == user_id).first()
+        access_version = int(user.access_version) if user else 0
+
+        visible_df = _filter_df_by_categories(
+            analytics_df,
+            tuple(sorted(allowed)),
+            access_version,
+        )
 
 mdf = _compute_category_metrics(visible_df)
 
@@ -423,6 +458,10 @@ for msg in st.session_state.chat_messages:
 # Allowed categories for routing (access-filtered)
 allowed_categories = sorted(mdf["category"].dropna().unique().tolist())
 
+if not allowed_categories:
+    st.info("No categories available for chat based on your access. Ask an admin to assign categories.")
+    st.stop()
+
 user_text = st.chat_input("Ask about ratings, NPS, sentiment reasons, or distributions...")
 
 if user_text:
@@ -464,6 +503,7 @@ if user_text:
         except Exception as e:
             router_out = {"tool": "metrics_top_categories", "args": {"top_n": 10}, "rationale": f"router_error: {e}"}
 
+        print("Router output:", router_out)
         # Validate tool call (strict access enforcement)
         validated = validate_tool_call(router_out, allowed_categories=set(allowed_categories))
 
@@ -475,50 +515,14 @@ if user_text:
             args=validated["args"],
         )
 
-        # Turn tool_result into a simple response
-        tool = validated["tool"]
-        args = validated["args"]
-
-        if tool == "metrics_top_categories":
-            rows = tool_result.get("metrics", [])
-            if not rows:
-                assistant_text = "No metrics available for your visible data."
-            else:
-                lines = []
-                for r in rows:
-                    # safe formatting
-                    cat = r.get("category", "")
-                    rc = r.get("review_count", 0)
-                    avg = r.get("avg_rating", None)
-                    nps = r.get("nps", None)
-                    avg_s = f"{avg:.2f}" if isinstance(avg, (int, float)) else "NA"
-                    nps_s = f"{nps:.1f}" if isinstance(nps, (int, float)) else "NA"
-                    lines.append(f"- {cat}: reviews={rc}, avg={avg_s}, nps={nps_s}")
-                assistant_text = f"Top categories (top_n={args.get('top_n')}):\n\n" + "\n".join(lines)
-
-        elif tool == "rating_distribution":
-            cat = tool_result.get("category", args.get("category", ""))
-            dist = tool_result.get("rating_distribution", {})
-            if not dist:
-                assistant_text = f"No rating distribution available for: {cat}"
-            else:
-                lines = [f"- {k}: {v}" for k, v in sorted(dist.items())]
-                assistant_text = f"Rating distribution for **{cat}**:\n\n" + "\n".join(lines)
-
-        elif tool == "sentiment_summary":
-            cat = tool_result.get("category", args.get("category", ""))
-            sent = tool_result.get("sentiment", {})
-            distro = sent.get("sentiment_distribution", {})
-            top_reasons = sent.get("top_reasons", [])
-
-            lines = [f"Distribution: {distro}"]
-            if top_reasons:
-                lines.append("Top reasons:")
-                lines.extend([f"- {r} ({c})" for r, c in top_reasons])
-            assistant_text = f"Sentiment summary for **{cat}** (max_reviews={args.get('max_reviews')}):\n\n" + "\n".join(lines)
-
-        else:
-            assistant_text = "I couldn't match that request to a supported tool yet."
+        # Generate assistant response
+        assistant_text = write_response(
+            user_message=user_text,
+            tool_name=validated["tool"],
+            tool_args=validated["args"],
+            tool_result=tool_result,
+            recent_messages=recent_for_router,
+        )
 
         # Log trace for debugging/traceability
         log_trace(
@@ -539,6 +543,7 @@ if user_text:
             },
             response_payload={
                 "assistant_text": assistant_text,
+                "tool_used": validated["tool"],
             },
             plot_payload=None,
         )

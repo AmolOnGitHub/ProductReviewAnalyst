@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from src.models import UserCategoryAccess, Category
+from src.models import User, UserCategoryAccess, Category
 
 
 def set_user_categories(
@@ -21,6 +21,10 @@ def set_user_categories(
             )
         )
 
+    db.query(User).filter(User.id == user_id).update(
+        {User.access_version: User.access_version + 1}
+    )
+    
     db.commit()
 
 
