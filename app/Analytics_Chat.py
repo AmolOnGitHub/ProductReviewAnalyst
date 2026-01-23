@@ -88,6 +88,8 @@ if "chat_messages" not in st.session_state:
 if "conversation_id" not in st.session_state:
     st.session_state.conversation_id = None
 
+if "compare_pair" not in st.session_state:
+    st.session_state.compare_pair = None
 
 
 ## Login Gate
@@ -174,6 +176,10 @@ with SessionLocal() as db:
 
 mdf = _compute_category_metrics(visible_df)
 
+# Filter: Remove categories with < 10 reviews
+mdf = mdf[mdf["review_count"] >= 10]
+visible_df = visible_df[visible_df["category"].isin(mdf["category"])]
+
 if mdf.empty:
     st.info("No data available for your current access.")
     st.stop()
@@ -198,15 +204,61 @@ with left:
     
     mdf_top = mdf.sort_values(top_metric, ascending=False).head(top_n)
 
-    # Top categories by selected metric
-    fig_top = px.bar(mdf_top, x="category", y=top_metric, title=f"Top {top_n} Categories by {metric_label}")
-    fig_top.update_layout(xaxis_title="Category", yaxis_title=metric_label, xaxis_tickangle=-45)
-    st.plotly_chart(fig_top, width="stretch")
+    # If compare is active, show compare chart; else show top chart
+    if st.session_state.compare_pair is not None:
+        a, b = st.session_state.compare_pair
+
+        # Get metrics rows from mdf (already filtered to >=10 reviews)
+        ra = mdf[mdf["category"] == a]
+        rb = mdf[mdf["category"] == b]
+
+        if ra.empty or rb.empty:
+            st.session_state.compare_pair = None  # invalid now; fallback to top chart
+        else:
+            ra = ra.iloc[0]
+            rb = rb.iloc[0]
+
+            cmp_df = pd.DataFrame([
+                {"category": a, "metric": "Review Count", "value": float(ra["review_count"])},
+                {"category": b, "metric": "Review Count", "value": float(rb["review_count"])},
+                {"category": a, "metric": "Avg Rating", "value": float(ra["avg_rating"])},
+                {"category": b, "metric": "Avg Rating", "value": float(rb["avg_rating"])},
+                {"category": a, "metric": "NPS", "value": float(ra["nps"])},
+                {"category": b, "metric": "NPS", "value": float(rb["nps"])},
+            ])
+
+            fig_cmp = px.bar(
+                cmp_df,
+                x="metric",
+                y="value",
+                color="category",
+                barmode="group",
+                title=f"Compare Categories — {a} vs {b}",
+            )
+            fig_cmp.update_layout(xaxis_title="Metric", yaxis_title="Value")
+            st.plotly_chart(fig_cmp, width="stretch")
+
+    if st.session_state.compare_pair is None:
+        # Top-N slice by selected metric (controlled via chat)
+        top_n = int(st.session_state.top_n)
+        top_metric = st.session_state.top_metric
+        metric_labels = {"review_count": "Review Count", "nps": "NPS", "avg_rating": "Average Rating"}
+        metric_label = metric_labels.get(top_metric, "Review Count")
+
+        mdf_top = mdf.sort_values(top_metric, ascending=False).head(top_n)
+
+        fig_top = px.bar(mdf_top, x="category", y=top_metric, title=f"Top {top_n} Categories by {metric_label}")
+        fig_top.update_layout(xaxis_title="Category", yaxis_title=metric_label, xaxis_tickangle=-45)
+        st.plotly_chart(fig_top, width="stretch")
+
 
     # Rating distribution: driven by plot_state["rating_dist_category"]
     cat = st.session_state.plot_state["rating_dist_category"]
     if cat is None:
-        cat = mdf_top.iloc[0]["category"]
+        if st.session_state.compare_pair is not None:
+            cat = st.session_state.compare_pair[0]
+        else:
+            cat = mdf.sort_values("review_count", ascending=False).iloc[0]["category"]
 
     sub = visible_df[(visible_df["category"] == cat)].dropna(subset=["rating"])
     fig_hist = px.histogram(sub, x="rating", nbins=5, title=f"Rating Distribution — {cat}")
@@ -289,6 +341,15 @@ with right:
                 if metric in {"review_count", "nps", "avg_rating"}:
                     st.session_state.top_metric = metric
 
+                st.session_state.compare_pair = None
+
+            if validated["tool"] == "compare_categories":
+                a = validated["args"]["category_a"]
+                b = validated["args"]["category_b"]
+                st.session_state.compare_pair = (a, b)
+                st.session_state.plot_state["rating_dist_category"] = a
+
+
             assistant_text = write_response(
                 user_message=user_text,
                 tool_name=validated["tool"],
@@ -309,6 +370,12 @@ with right:
                 metric_label = metric_labels.get(metric, "Review Count")
                 assistant_text = f"Updated to show Top {tn} categories by **{metric_label}** — check the plot on the left."
 
+            if validated["tool"] == "compare_categories":
+                a = validated["args"]["category_a"]
+                b = validated["args"]["category_b"]
+                assistant_text = f"Compared **{a}** vs **{b}** across review count, average rating, and NPS — check the chart on the left."
+
+
             # Log trace
             log_trace(
                 db,
@@ -324,7 +391,7 @@ with right:
         st.session_state.chat_messages.append({"role": "assistant", "content": assistant_text})
         
         # Rerun only for plot-updating tools to refresh the charts
-        if validated and validated["tool"] in {"metrics_top_categories", "rating_distribution"}:
+        if validated and validated["tool"] in {"metrics_top_categories", "rating_distribution", "compare_categories"}:
             st.rerun()
         else:
             # st.rerun() is cleanest to show the new message in the history loop above.

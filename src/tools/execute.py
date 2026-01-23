@@ -66,4 +66,21 @@ def run_tool(
         out = analyze_reviews_with_cache(db, reviews, max_reviews=max_reviews, batch_size=10, timeout_s=15.0)
         return {"category": cat, "sentiment": out}
 
+    if tool == "compare_categories":
+        a = args["category_a"]
+        b = args["category_b"]
+
+        row_a = mdf[mdf["category"] == a]
+        row_b = mdf[mdf["category"] == b]
+
+        if row_a.empty or row_b.empty:
+            return {"error": "one_or_both_categories_not_found", "category_a": a, "category_b": b}
+
+        return {
+            "category_a": a,
+            "category_b": b,
+            "metrics_a": row_a.iloc[0].to_dict(),
+            "metrics_b": row_b.iloc[0].to_dict(),
+        }
+    
     return {"error": "unknown_tool"}
