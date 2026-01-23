@@ -16,6 +16,7 @@ from src.category_service import upsert_categories
 from src.models import Category, User, UserCategoryAccess
 from src.access_control import set_user_categories
 from src.user_service import create_user
+from src.trace_service import fetch_recent_traces
 
 
 st.set_page_config(page_title="Admin Tools", layout="wide")
@@ -85,6 +86,84 @@ with st.expander("Developer tools", expanded=True):
             [{"id": c.id, "name": c.name} for c in categories],
             width=800,
         )
+
+
+with st.expander("LLM Trace Viewer", expanded=False):
+    st.subheader("LLM Trace Viewer")
+
+    trace_limit = st.slider("Number of traces", 10, 200, 50)
+
+    with SessionLocal() as db:
+        traces = fetch_recent_traces(db, limit=trace_limit)
+
+    if not traces:
+        st.info("No traces found.")
+    else:
+        trace_rows = []
+        for t in traces:
+            prompt_payload = t.prompt_payload if isinstance(t.prompt_payload, dict) else {}
+            retrieval_payload = t.retrieval_payload if isinstance(t.retrieval_payload, dict) else {}
+            tool_payload = retrieval_payload.get("tool")
+            if not isinstance(tool_payload, dict):
+                tool_payload = {}
+            router_payload = prompt_payload.get("router")
+            if not isinstance(router_payload, dict):
+                router_payload = {}
+
+            user_query = t.user_query or ""
+            short_query = user_query
+            if len(user_query) > 80:
+                short_query = f"{user_query[:80]}..."
+
+            tool_name = tool_payload.get("tool") or router_payload.get("tool") or ""
+            fallback_reason = tool_payload.get("fallback_reason") or ""
+
+            trace_rows.append(
+                {
+                    "time": t.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "user_id": t.user_id,
+                    "tool": tool_name,
+                    "fallback_reason": fallback_reason,
+                    "query": short_query,
+                }
+            )
+
+        st.dataframe(trace_rows, width='stretch')
+
+        selected_idx = st.selectbox(
+            "Inspect trace",
+            options=list(range(len(traces))),
+            format_func=lambda i: f"{trace_rows[i]['time']} - {trace_rows[i]['tool']}",
+        )
+
+        t = traces[selected_idx]
+        prompt_payload = t.prompt_payload if isinstance(t.prompt_payload, dict) else {}
+        retrieval_payload = t.retrieval_payload if isinstance(t.retrieval_payload, dict) else {}
+        response_payload = t.response_payload if isinstance(t.response_payload, dict) else {}
+        router_payload = prompt_payload.get("router")
+        if not isinstance(router_payload, dict):
+            router_payload = {}
+        tool_payload = retrieval_payload.get("tool")
+        if not isinstance(tool_payload, dict):
+            tool_payload = {}
+        tool_result = retrieval_payload.get("tool_result")
+
+        st.markdown("### Full Trace")
+
+        st.markdown("#### User query")
+        st.json({"user_query": t.user_query})
+
+        st.markdown("#### Router decision")
+        st.json(router_payload)
+
+        st.markdown("#### Validator enforcement")
+        st.json(tool_payload)
+
+        st.markdown("#### Tool execution")
+        st.json(tool_result)
+
+        st.markdown("#### Final response")
+        st.json(response_payload)
 
 
 # Create Analyst User

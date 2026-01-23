@@ -3,7 +3,15 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
+
 from src.models import Conversation, MessageTrace
+def fetch_recent_traces(db, limit: int = 50):
+    return (
+        db.query(MessageTrace)
+        .order_by(MessageTrace.created_at.desc())
+        .limit(limit)
+        .all()
+    )
 
 
 def get_or_create_conversation(db: Session, *, user_id: int, title: str | None = None) -> Conversation:

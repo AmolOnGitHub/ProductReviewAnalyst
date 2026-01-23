@@ -35,6 +35,54 @@ from src.tools.validator import validate_tool_call
 from src.tools.execute import run_tool
 
 
+def apply_state_aware_response(
+    *,
+    tool: str,
+    args: dict,
+    prev_state: dict,
+    assistant_text: str,
+) -> str:
+    """
+    Rewrites assistant responses to acknowledge existing UI state.
+    Does NOT change tool execution or plots.
+    """
+
+    # Already comparing the same pair
+    if tool == "compare_categories":
+        a, b = args["category_a"], args["category_b"]
+        if prev_state.get("compare_pair") == (a, b):
+            return f"Still comparing **{a}** vs **{b}** — no changes needed. Check the chart on the left."
+        return assistant_text
+
+    # Top categories state awareness
+    if tool == "metrics_top_categories":
+        prev_metric = prev_state.get("top_metric")
+        prev_top_n = prev_state.get("top_n")
+
+        new_metric = args.get("metric", prev_metric)
+        new_top_n = args.get("top_n", prev_top_n)
+
+        changes = []
+        if new_metric != prev_metric:
+            changes.append(f"ranking by **{new_metric.replace('_', ' ')}**")
+        if new_top_n != prev_top_n:
+            changes.append(f"showing top **{new_top_n}**")
+
+        if changes:
+            return f"Updated view — now {' and '.join(changes)}. Check the chart on the left."
+        else:
+            return "This view is already up to date. Check the chart on the left."
+
+    # Rating distribution already visible
+    if tool == "rating_distribution":
+        cat = args["category"]
+        if prev_state.get("rating_dist_category") == cat:
+            return f"Already showing the rating distribution for **{cat}**."
+        return assistant_text
+
+    return assistant_text
+
+
 ## Streamlit Config
 st.set_page_config(page_title="Analytics & Chat", layout="wide")
 
@@ -321,6 +369,13 @@ with right:
 
             validated = validate_tool_call(router_out, allowed_categories=set(allowed_categories))
 
+            prev_state = {
+                "compare_pair": st.session_state.compare_pair,
+                "top_n": st.session_state.top_n,
+                "top_metric": st.session_state.top_metric,
+                "rating_dist_category": st.session_state.plot_state["rating_dist_category"],
+            }
+
             tool_result = run_tool(
                 db=db,
                 visible_df=visible_df,
@@ -375,6 +430,12 @@ with right:
                 b = validated["args"]["category_b"]
                 assistant_text = f"Compared **{a}** vs **{b}** across review count, average rating, and NPS — check the chart on the left."
 
+            assistant_text = apply_state_aware_response(
+                tool=validated["tool"],
+                args=validated["args"],
+                prev_state=prev_state,
+                assistant_text=assistant_text,
+            )
 
             # Log trace
             log_trace(
