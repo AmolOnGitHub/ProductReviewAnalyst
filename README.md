@@ -6,8 +6,13 @@ This project is a supervised, tool-driven analytics system that allows users to 
 
 Instead of allowing a language model to freely answer questions over raw data, the system routes every user query through a deterministic tool layer. The LLM is used only for intent understanding and response synthesis, never for direct data access. All decisions are validated, access-controlled, and logged for traceability.
 
-The system is implemented using Python, Streamlit, PostgreSQL, and the Gemini API, and operates on an Amazon product reviews dataset.
+The system is implemented using Python, Streamlit, Supabase Postgres, and the Gemini API, and operates on an Amazon product reviews dataset.
 
+Hosting:
+- Streamlit for the app
+- Supabase for the managed Postgres database
+
+Available at: https://reviewanalyst-amolongh.streamlit.app/
 ---
 
 ## Problem Statement
@@ -165,7 +170,7 @@ The system was tested using a structured prompt suite covering:
 - Retry and resilience behavior
 - Ambiguous and malformed inputs
 
-Testing focused on correctness, safety, and predictable behavior rather than maximizing recall.
+Testing focused on correctness, safety, and predictable behavior.
 
 ---
 
@@ -190,8 +195,9 @@ These omissions are deliberate design choices.
 ## Dataset & Tech Stack
 
 - **Dataset:** Amazon Product Reviews (Kaggle)
-- **Backend:** Python, PostgreSQL, SQLAlchemy
+- **Backend:** Python, Supabase Postgres, SQLAlchemy
 - **Frontend:** Streamlit
+- **Hosting:** Streamlit, Supabase
 - **LLM:** Gemini (via API)
 - **Visualization:** Plotly
 
@@ -203,7 +209,7 @@ SESSION_SECRET=your_session_secret
 
 ---
 
-## Future Work (Optional)
+## Future Work
 
 - Item-level retrieval layered under categories
 - Automated evaluation harness for routing accuracy
