@@ -64,9 +64,13 @@ def validate_tool_call(tc: Dict[str, Any], allowed_categories: set[str]) -> Dict
         if metric not in {"review_count", "nps", "avg_rating"}:
             metric = "review_count"
 
+        direction = args.get("direction", "desc")
+        if direction not in {"asc", "desc"}:
+            direction = "desc"
+
         return {
             "tool": tool,
-            "args": {"top_n": top_n, "metric": metric},
+            "args": {"top_n": top_n, "metric": metric, "direction": direction},
             "rationale": tc.get("rationale", ""),
         }
 

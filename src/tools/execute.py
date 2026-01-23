@@ -46,8 +46,14 @@ def run_tool(
     if tool == "metrics_top_categories":
         top_n = args["top_n"]
         metric = args.get("metric", "review_count")
-        mdf_sorted = mdf.sort_values(metric, ascending=False).head(top_n)
-        return {"metrics": mdf_sorted.to_dict(orient="records"), "sorted_by": metric}
+        direction = args.get("direction", "desc")
+        ascending = direction == "asc"
+        mdf_sorted = mdf.sort_values(metric, ascending=ascending).head(top_n)
+        return {
+            "metrics": mdf_sorted.to_dict(orient="records"),
+            "sorted_by": metric,
+            "direction": direction,
+        }
 
     if tool == "rating_distribution":
         cat = args["category"]

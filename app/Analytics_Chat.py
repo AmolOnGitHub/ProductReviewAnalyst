@@ -89,15 +89,20 @@ def apply_state_aware_response(
     if tool == "metrics_top_categories":
         prev_metric = prev_state.get("top_metric")
         prev_top_n = prev_state.get("top_n")
+        prev_direction = prev_state.get("top_direction")
 
         new_metric = args.get("metric", prev_metric)
         new_top_n = args.get("top_n", prev_top_n)
+        new_direction = args.get("direction", prev_direction)
 
         changes = []
         if new_metric != prev_metric:
             changes.append(f"ranking by **{new_metric.replace('_', ' ')}**")
         if new_top_n != prev_top_n:
-            changes.append(f"showing top **{new_top_n}**")
+            changes.append(f"showing **{new_top_n}** categories")
+        if new_direction != prev_direction:
+            direction_label = "lowest first" if new_direction == "asc" else "highest first"
+            changes.append(f"sorting {direction_label}")
 
         if changes:
             return f"Updated view — now {' and '.join(changes)}. Check the chart on the left."
@@ -192,6 +197,9 @@ if "top_n" not in st.session_state:
 
 if "top_metric" not in st.session_state:
     st.session_state.top_metric = "review_count"
+
+if "top_direction" not in st.session_state:
+    st.session_state.top_direction = "desc"
 
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
@@ -310,10 +318,12 @@ with left:
     # Top-N slice by selected metric (controlled via chat)
     top_n = int(st.session_state.top_n)
     top_metric = st.session_state.top_metric
+    top_direction = st.session_state.top_direction
     metric_labels = {"review_count": "Review Count", "nps": "NPS", "avg_rating": "Average Rating"}
     metric_label = metric_labels.get(top_metric, "Review Count")
+    title_label = "Bottom" if top_direction == "asc" else "Top"
     
-    mdf_top = mdf.sort_values(top_metric, ascending=False).head(top_n)
+    mdf_top = mdf.sort_values(top_metric, ascending=top_direction == "asc").head(top_n)
 
     # If compare is active, show compare chart; else show top chart
     if st.session_state.compare_pair is not None:
@@ -353,12 +363,14 @@ with left:
         # Top-N slice by selected metric (controlled via chat)
         top_n = int(st.session_state.top_n)
         top_metric = st.session_state.top_metric
+        top_direction = st.session_state.top_direction
         metric_labels = {"review_count": "Review Count", "nps": "NPS", "avg_rating": "Average Rating"}
         metric_label = metric_labels.get(top_metric, "Review Count")
+        title_label = "Bottom" if top_direction == "asc" else "Top"
 
-        mdf_top = mdf.sort_values(top_metric, ascending=False).head(top_n)
+        mdf_top = mdf.sort_values(top_metric, ascending=top_direction == "asc").head(top_n)
 
-        fig_top = px.bar(mdf_top, x="category", y=top_metric, title=f"Top {top_n} Categories by {metric_label}")
+        fig_top = px.bar(mdf_top, x="category", y=top_metric, title=f"{title_label} {top_n} Categories by {metric_label}")
         fig_top.update_layout(xaxis_title="Category", yaxis_title=metric_label, xaxis_tickangle=-45)
         st.plotly_chart(fig_top, width="stretch")
 
@@ -408,6 +420,7 @@ with right:
             st.session_state.compare_pair = None
             st.session_state.top_n = 15
             st.session_state.top_metric = "review_count"
+            st.session_state.top_direction = "desc"
             st.session_state.plot_state["rating_dist_category"] = None
 
             assistant_text = "View reset to defaults - showing Top 15 categories by review count."
@@ -484,6 +497,7 @@ with right:
                 "compare_pair": st.session_state.compare_pair,
                 "top_n": st.session_state.top_n,
                 "top_metric": st.session_state.top_metric,
+                "top_direction": st.session_state.top_direction,
                 "rating_dist_category": st.session_state.plot_state["rating_dist_category"],
             }
 
@@ -506,6 +520,9 @@ with right:
                 metric = validated["args"].get("metric")
                 if metric in {"review_count", "nps", "avg_rating"}:
                     st.session_state.top_metric = metric
+                direction = validated["args"].get("direction")
+                if direction in {"asc", "desc"}:
+                    st.session_state.top_direction = direction
 
                 st.session_state.compare_pair = None
 
@@ -532,9 +549,11 @@ with right:
             if validated["tool"] == "metrics_top_categories":
                 tn = validated["args"].get("top_n", st.session_state.top_n)
                 metric = validated["args"].get("metric", st.session_state.top_metric)
+                direction = validated["args"].get("direction", st.session_state.top_direction)
                 metric_labels = {"review_count": "Review Count", "nps": "NPS", "avg_rating": "Average Rating"}
                 metric_label = metric_labels.get(metric, "Review Count")
-                assistant_text = f"Updated to show Top {tn} categories by **{metric_label}** — check the plot on the left."
+                label = "Bottom" if direction == "asc" else "Top"
+                assistant_text = f"Updated to show {label} {tn} categories by **{metric_label}** — check the plot on the left."
 
             if validated["tool"] == "compare_categories":
                 a = validated["args"]["category_a"]
