@@ -199,7 +199,7 @@ with SessionLocal() as db:
 
 with st.form("create_analyst_form"):
     analyst_email = st.text_input("Analyst email")
-    analyst_password = st.text_input("Analyst temporary password", type="password")
+    analyst_password = st.text_input("Analyst password", type="password")
 
     assign_now = st.checkbox("Assign categories now", value=True)
 
