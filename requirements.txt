@@ -1,10 +1,10 @@
+streamlit>=1.31,<2
 altair>=5.0.0,<6
+plotly
+pandas
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
 bcrypt
 google-genai
 itsdangerous
-pandas
-plotly
 python-dotenv
-sqlalchemy
-streamlit
-psycopg2
