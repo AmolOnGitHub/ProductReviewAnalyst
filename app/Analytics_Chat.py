@@ -35,6 +35,37 @@ from src.tools.validator import validate_tool_call
 from src.tools.execute import run_tool
 
 
+RESET_PHRASES = {
+    "reset",
+    "reset view",
+    "clear",
+    "clear view",
+    "back",
+    "back to default",
+    "back to top",
+    "back to top categories",
+    "stop comparing",
+    "clear comparison",
+    "exit compare",
+    "exit comparison",
+}
+
+
+def is_reset_intent(text: str) -> bool:
+    t = " ".join((text or "").lower().strip().split())
+    if not t:
+        return False
+    if t in RESET_PHRASES:
+        return True
+    if t.startswith("reset") or t.startswith("clear"):
+        return True
+    if "stop comparing" in t:
+        return True
+    if t in {"default", "home"}:
+        return True
+    return False
+
+
 def apply_state_aware_response(
     *,
     tool: str,
@@ -81,6 +112,38 @@ def apply_state_aware_response(
         return assistant_text
 
     return assistant_text
+
+
+def access_refusal_message(rationale: str) -> str | None:
+    """
+    Maps validator fallback rationales to user-visible explanations.
+    Returns None if no refusal message should be shown.
+    """
+
+    messages = {
+        "fallback_category_not_allowed": (
+            "I cannot analyze that category because you do not have access to it. "
+            "I have shown data you do have access to instead."
+        ),
+        "fallback_compare_category_not_allowed": (
+            "I cannot compare those categories because one or more of them are outside your access. "
+            "I have shown a safe fallback instead."
+        ),
+        "fallback_missing_category": (
+            "I could not determine which category you meant, so I have shown a general overview instead."
+        ),
+        "fallback_missing_compare_categories": (
+            "To compare categories, I need two valid category names. I have shown a general view instead."
+        ),
+        "fallback_same_category_compare": (
+            "Comparing a category to itself does not add insight, so I have shown its rating distribution instead."
+        ),
+        "fallback_invalid_tool": (
+            "I could not perform that request as asked, so I have shown a general overview instead."
+        ),
+    }
+
+    return messages.get(rationale)
 
 
 ## Streamlit Config
@@ -340,6 +403,54 @@ with right:
         with chat_container:
             with st.chat_message("user"):
                 st.write(user_text)
+
+        if is_reset_intent(user_text):
+            st.session_state.compare_pair = None
+            st.session_state.top_n = 15
+            st.session_state.top_metric = "review_count"
+            st.session_state.plot_state["rating_dist_category"] = None
+
+            assistant_text = "View reset to defaults - showing Top 15 categories by review count."
+
+            with SessionLocal() as db:
+                if st.session_state.conversation_id is None:
+                    conv = get_or_create_conversation(
+                        db,
+                        user_id=st.session_state.user["id"],
+                        title="Streamlit chat",
+                    )
+                    st.session_state.conversation_id = conv.id
+
+                log_trace(
+                    db,
+                    conversation_id=st.session_state.conversation_id,
+                    user_id=st.session_state.user["id"],
+                    user_query=user_text,
+                    prompt_payload={
+                        "router": {
+                            "tool": "local_reset",
+                            "rationale": "deterministic_reset_intent",
+                        }
+                    },
+                    retrieval_payload={
+                        "tool": {
+                            "tool": "local_reset",
+                            "args": {},
+                        }
+                    },
+                    response_payload={
+                        "assistant_text": assistant_text,
+                        "tool_used": "local_reset",
+                    },
+                    plot_payload={
+                        "reset": True,
+                    },
+                )
+
+            st.session_state.chat_messages.append(
+                {"role": "assistant", "content": assistant_text}
+            )
+            st.rerun()
         
         # Logic processing
         assistant_text = "Sorry — I couldn't process that."
@@ -436,6 +547,10 @@ with right:
                 prev_state=prev_state,
                 assistant_text=assistant_text,
             )
+
+            refusal_msg = access_refusal_message(validated.get("rationale"))
+            if refusal_msg:
+                assistant_text = f"{refusal_msg}\n\n{assistant_text}"
 
             # Log trace
             log_trace(
