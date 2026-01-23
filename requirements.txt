@@ -1,3 +1,4 @@
+altair>=5.0.0,<6
 bcrypt
 google-genai
 itsdangerous
@@ -6,3 +7,4 @@ plotly
 python-dotenv
 sqlalchemy
 streamlit
+psycopg2

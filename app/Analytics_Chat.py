@@ -215,9 +215,19 @@ if "conversation_id" not in st.session_state:
 if "compare_pair" not in st.session_state:
     st.session_state.compare_pair = None
 
+if "logout_requested" not in st.session_state:
+    st.session_state.logout_requested = False
+
+skip_cookie_restore = False
+if st.session_state.logout_requested:
+    clear_session_cookie()
+    st.session_state.user = None
+    st.session_state.logout_requested = False
+    skip_cookie_restore = True
+
 if "session_checked" not in st.session_state:
     st.session_state.session_checked = True
-    if st.session_state.user is None:
+    if not skip_cookie_restore and st.session_state.user is None:
         cookie_user_id = get_user_id_from_cookie()
         if cookie_user_id is not None:
             with SessionLocal() as db:
@@ -289,7 +299,7 @@ if st.session_state.user["role"] != "admin":
 
 if st.sidebar.button("Logout"):
     st.session_state.user = None
-    clear_session_cookie()
+    st.session_state.logout_requested = True
     st.rerun()
 
 
