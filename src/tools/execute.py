@@ -15,10 +15,39 @@ def run_tool(
     tool: str,
     args: Dict[str, Any],
 ) -> Dict[str, Any]:
+    mdf = category_metrics(visible_df)
+    
+    if tool == "general_query":
+        query_type = args.get("query_type", "summary_stats")
+        cat = args.get("category")
+        
+        if query_type == "count_categories":
+            return {"total_categories": int(mdf["category"].nunique()), "total_reviews": int(visible_df.shape[0])}
+        
+        if query_type == "list_categories":
+            categories = sorted(mdf["category"].unique().tolist())
+            return {"categories": categories, "count": len(categories)}
+        
+        if query_type == "category_info" and cat:
+            row = mdf[mdf["category"] == cat]
+            if row.empty:
+                return {"error": f"Category '{cat}' not found"}
+            info = row.iloc[0].to_dict()
+            return {"category": cat, "info": info}
+        
+        # summary_stats (default)
+        return {
+            "total_categories": int(mdf["category"].nunique()),
+            "total_reviews": int(visible_df.shape[0]),
+            "avg_rating_overall": float(visible_df["rating"].mean()) if "rating" in visible_df else None,
+            "top_category_by_reviews": mdf.sort_values("review_count", ascending=False).iloc[0]["category"] if not mdf.empty else None,
+        }
+
     if tool == "metrics_top_categories":
         top_n = args["top_n"]
-        mdf = category_metrics(visible_df).head(top_n)
-        return {"metrics": mdf.to_dict(orient="records")}
+        metric = args.get("metric", "review_count")
+        mdf_sorted = mdf.sort_values(metric, ascending=False).head(top_n)
+        return {"metrics": mdf_sorted.to_dict(orient="records"), "sorted_by": metric}
 
     if tool == "rating_distribution":
         cat = args["category"]

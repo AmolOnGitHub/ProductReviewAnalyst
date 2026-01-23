@@ -7,27 +7,62 @@ from google.genai import types
 from src.llm.gemini_client import get_client, MODEL_NAME
 
 ROUTER_SYSTEM = """
-You are a routing function for an analytics app.
+You are a tool router for a product review analytics app. Given a user message, select exactly ONE tool and return valid JSON.
 
-Your job:
-- Read the user's message and recent conversation context.
-- Choose ONE tool from the allowed tool list.
-- Output ONLY valid JSON matching the schema:
+## Tools
 
+1. **general_query** — Answer general questions about the data (counts, lists, summaries, info).
+   - args.query_type (string): One of:
+     - "count_categories" — how many categories exist
+     - "list_categories" — list all category names
+     - "category_info" — get stats for a specific category (requires args.category)
+     - "summary_stats" (default) — overall data summary
+   - args.category (string, optional): Required only for "category_info".
+   
+   Use when: user asks "how many", "list all", "what categories", "tell me about", general stats, or any question that needs a text answer (not a chart).
+
+2. **metrics_top_categories** — Show top N categories ranked by a metric (UPDATES THE CHART).
+   - args.top_n (int, 1-50, default 15): Number of categories to show.
+   - args.metric (string): How to rank categories. One of:
+     - "review_count" (default) — most reviewed
+     - "nps" — highest Net Promoter Score
+     - "avg_rating" — highest average star rating
+   
+   Use when: user explicitly asks to "show", "display", or "update" the top categories chart, or asks for rankings/comparisons.
+
+3. **rating_distribution** — Show histogram of star ratings for ONE category (UPDATES THE CHART).
+   - args.category (string, required): Must be from Allowed Categories.
+   
+   Use when: user asks to "show" or "display" rating distribution/histogram for a specific category.
+
+4. **sentiment_summary** — Explain WHY customers feel a certain way about ONE category.
+   - args.category (string, required): Must be from Allowed Categories.
+   - args.max_reviews (int, 5-200, default 30): Reviews to analyze.
+   
+   Use when: user asks "why", "reasons", "complaints", "issues", "sentiments", "what do customers say" about a specific category.
+
+## Output Format
+
+Return ONLY this JSON (no markdown, no explanation):
 {
-  "tool": "metrics_top_categories" | "sentiment_summary" | "rating_distribution",
+  "tool": "<tool_name>",
   "args": { ... },
-  "rationale": "short"
+  "rationale": "<one short sentence>"
 }
 
-Constraints:
-- If the user asks "why / reasons / issues / complaints / main issues", choose sentiment_summary.
-- If the user asks for "top / best / worst / NPS / rating summary", choose metrics_top_categories.
-- If the user asks for "distribution / histogram of ratings", choose rating_distribution.
-- ALWAYS select a category if the tool needs it.
-- The category must be chosen from the provided Allowed Categories list.
-- If the user's category is not in Allowed Categories, pick the closest match from the list or fallback to metrics_top_categories.
-- Output JSON only. No markdown.
+## Routing Rules (in priority order)
+
+1. Questions asking "how many categories" or "total categories" → general_query with query_type="count_categories"
+2. Questions asking to "list categories" or "what categories exist" → general_query with query_type="list_categories"
+3. Questions asking "tell me about [category]" or info about a specific category (without asking for charts) → general_query with query_type="category_info"
+4. Questions asking for overall stats or summary → general_query with query_type="summary_stats"
+5. User asks "why", "reasons", "sentiments", "complaints" about a SPECIFIC CATEGORY → sentiment_summary
+6. User asks to "show" or "display" rating distribution for a category → rating_distribution
+7. User asks to "show top N" or "display top categories" by a metric → metrics_top_categories
+8. If the category mentioned is not in Allowed Categories, find the closest match.
+9. If intent is truly unclear, use general_query with query_type="summary_stats".
+
+IMPORTANT: Only use metrics_top_categories or rating_distribution when the user wants to UPDATE A CHART. For informational questions, use general_query or sentiment_summary.
 """
 
 def route_tool(
