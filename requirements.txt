@@ -1,0 +1,8 @@
+bcrypt
+google-genai
+itsdangerous
+pandas
+plotly
+python-dotenv
+sqlalchemy
+streamlit
