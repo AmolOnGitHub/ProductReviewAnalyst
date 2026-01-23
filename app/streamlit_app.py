@@ -27,6 +27,10 @@ from src.analytics_access import load_analytics_df_for_user
 from src.metrics import category_metrics
 from src.plots import plot_nps_by_category, plot_rating_distribution, plot_avg_rating_by_category
 from src.sentiment_cache_service import analyze_reviews_with_cache
+from src.trace_service import get_or_create_conversation, log_trace
+from src.llm.router import route_tool
+from src.tools.validator import validate_tool_call
+from src.tools.execute import run_tool
 
 
 ## Streamlit Config
@@ -396,3 +400,150 @@ if st.button("Analyze sentiment"):
             [{"reason": r, "count": c} for r, c in sentiment_out["top_reasons"]],
             width='stretch',
         )
+
+
+## Chat
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []  # list[{"role": "user"|"assistant", "content": str}]
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = None
+
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []  # list[{"role": "user"|"assistant", "content": str}]
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = None
+
+st.subheader("Chat")
+
+# Render chat history
+for msg in st.session_state.chat_messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+
+# Allowed categories for routing (access-filtered)
+allowed_categories = sorted(mdf["category"].dropna().unique().tolist())
+
+user_text = st.chat_input("Ask about ratings, NPS, sentiment reasons, or distributions...")
+
+if user_text:
+    # show user msg
+    st.session_state.chat_messages.append({"role": "user", "content": user_text})
+    with st.chat_message("user"):
+        st.write(user_text)
+
+    assistant_text = "Sorry — I couldn't process that."
+    router_out = None
+    validated = None
+    tool_result = None
+
+    with SessionLocal() as db:
+        # ensure conversation exists
+        if st.session_state.conversation_id is None:
+            conv = get_or_create_conversation(
+                db,
+                user_id=st.session_state.user["id"],
+                title="Streamlit chat",
+            )
+            st.session_state.conversation_id = conv.id
+
+        conversation_id = st.session_state.conversation_id
+        user_id = st.session_state.user["id"]
+
+        # Build small “memory” from recent chat messages
+        recent_msgs = st.session_state.chat_messages[-6:]
+        # Convert to a compact structure for the router
+        recent_for_router = [{"role": m["role"], "content": m["content"]} for m in recent_msgs]
+
+        # Route tool via Gemini
+        try:
+            router_out = route_tool(
+                user_message=user_text,
+                allowed_categories=allowed_categories,
+                recent_messages=recent_for_router,
+            )
+        except Exception as e:
+            router_out = {"tool": "metrics_top_categories", "args": {"top_n": 10}, "rationale": f"router_error: {e}"}
+
+        # Validate tool call (strict access enforcement)
+        validated = validate_tool_call(router_out, allowed_categories=set(allowed_categories))
+
+        # Execute tool on access-filtered data
+        tool_result = run_tool(
+            db=db,
+            visible_df=visible_df,
+            tool=validated["tool"],
+            args=validated["args"],
+        )
+
+        # Turn tool_result into a simple response
+        tool = validated["tool"]
+        args = validated["args"]
+
+        if tool == "metrics_top_categories":
+            rows = tool_result.get("metrics", [])
+            if not rows:
+                assistant_text = "No metrics available for your visible data."
+            else:
+                lines = []
+                for r in rows:
+                    # safe formatting
+                    cat = r.get("category", "")
+                    rc = r.get("review_count", 0)
+                    avg = r.get("avg_rating", None)
+                    nps = r.get("nps", None)
+                    avg_s = f"{avg:.2f}" if isinstance(avg, (int, float)) else "NA"
+                    nps_s = f"{nps:.1f}" if isinstance(nps, (int, float)) else "NA"
+                    lines.append(f"- {cat}: reviews={rc}, avg={avg_s}, nps={nps_s}")
+                assistant_text = f"Top categories (top_n={args.get('top_n')}):\n\n" + "\n".join(lines)
+
+        elif tool == "rating_distribution":
+            cat = tool_result.get("category", args.get("category", ""))
+            dist = tool_result.get("rating_distribution", {})
+            if not dist:
+                assistant_text = f"No rating distribution available for: {cat}"
+            else:
+                lines = [f"- {k}: {v}" for k, v in sorted(dist.items())]
+                assistant_text = f"Rating distribution for **{cat}**:\n\n" + "\n".join(lines)
+
+        elif tool == "sentiment_summary":
+            cat = tool_result.get("category", args.get("category", ""))
+            sent = tool_result.get("sentiment", {})
+            distro = sent.get("sentiment_distribution", {})
+            top_reasons = sent.get("top_reasons", [])
+
+            lines = [f"Distribution: {distro}"]
+            if top_reasons:
+                lines.append("Top reasons:")
+                lines.extend([f"- {r} ({c})" for r, c in top_reasons])
+            assistant_text = f"Sentiment summary for **{cat}** (max_reviews={args.get('max_reviews')}):\n\n" + "\n".join(lines)
+
+        else:
+            assistant_text = "I couldn't match that request to a supported tool yet."
+
+        # Log trace for debugging/traceability
+        log_trace(
+            db,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            user_query=user_text,
+            prompt_payload={
+                "router": {
+                    "allowed_categories_count": len(allowed_categories),
+                    "recent_messages": recent_for_router,
+                },
+                "router_output": router_out,
+            },
+            retrieval_payload={
+                "validated_tool_call": validated,
+                "tool_result": tool_result,
+            },
+            response_payload={
+                "assistant_text": assistant_text,
+            },
+            plot_payload=None,
+        )
+
+    # Show assistant
+    st.session_state.chat_messages.append({"role": "assistant", "content": assistant_text})
+    with st.chat_message("assistant"):
+        st.write(assistant_text)
