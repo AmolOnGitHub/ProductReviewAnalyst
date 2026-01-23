@@ -5,6 +5,16 @@ from typing import Callable, TypeVar
 
 T = TypeVar("T")
 
+RETRYABLE_ERROR_KEYWORDS = [
+    "resource_exhausted",
+    "429",
+    "rate limit",
+    "timeout",
+    "temporarily unavailable",
+    "connection",
+    "network",
+]
+
 
 def call_with_retry(
     fn: Callable[[], T],
@@ -32,3 +42,31 @@ def call_with_retry(
     # If we exhausted retries, raise the last exception
     assert last_exc is not None
     raise last_exc
+
+
+def is_retryable_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(keyword in msg for keyword in RETRYABLE_ERROR_KEYWORDS)
+
+
+def with_retry(
+    fn: Callable[[], T],
+    *,
+    max_attempts: int = 3,
+    base_delay_s: float = 0.5,
+) -> T:
+    """
+    Executes fn() with bounded exponential backoff for retryable errors only.
+    """
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except Exception as exc:
+            attempt += 1
+            if attempt >= max_attempts or not is_retryable_error(exc):
+                raise
+
+            sleep_time = base_delay_s * (2 ** (attempt - 1))
+            sleep_time += random.uniform(0, 0.2)
+            time.sleep(sleep_time)

@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from google.genai import types
 from src.llm.gemini_client import get_client, MODEL_NAME
+from src.llm.retry import with_retry
 
 ROUTER_SYSTEM = """
 You are a tool router for a product review analytics app. Given a user message, select exactly ONE tool and return valid JSON.
@@ -92,15 +93,17 @@ def route_tool(
 
     prompt = json.dumps(ctx, ensure_ascii=False)
 
-    resp = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=ROUTER_SYSTEM,
-            temperature=0.0,    # stable routing
-            max_output_tokens=300,
-            response_mime_type="application/json",
-        ),
+    resp = with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=ROUTER_SYSTEM,
+                temperature=0.0,    # stable routing
+                max_output_tokens=300,
+                response_mime_type="application/json",
+            ),
+        )
     )
 
     raw = (resp.text or "").strip()

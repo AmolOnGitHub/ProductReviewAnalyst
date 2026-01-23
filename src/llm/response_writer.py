@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 from google.genai import types
 from src.llm.gemini_client import get_client, MODEL_NAME
+from src.llm.retry import with_retry
 
 SYSTEM_INSTRUCTION = """
 You are an analytics assistant helping users understand product review data.
@@ -46,14 +47,16 @@ def write_response(
 
     prompt = json.dumps(payload, ensure_ascii=False, indent=2)
 
-    resp = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.3,
-            max_output_tokens=400,
-        ),
+    resp = with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.3,
+                max_output_tokens=400,
+            ),
+        )
     )
 
     assistant_text = (resp.text or "").strip() or "I couldn't generate a response from the available data."

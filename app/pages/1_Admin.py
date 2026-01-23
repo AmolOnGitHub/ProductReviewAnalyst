@@ -17,11 +17,36 @@ from src.models import Category, User, UserCategoryAccess
 from src.access_control import set_user_categories
 from src.user_service import create_user
 from src.trace_service import fetch_recent_traces
+from src.auth.session_cookie import clear_session_cookie, get_user_id_from_cookie
 
 
 st.set_page_config(page_title="Admin Tools", layout="wide")
 
-if "user" not in st.session_state or st.session_state.user is None:
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+if "session_checked" not in st.session_state:
+    st.session_state.session_checked = True
+    if st.session_state.user is None:
+        cookie_user_id = get_user_id_from_cookie()
+        if cookie_user_id is not None:
+            with SessionLocal() as db:
+                user = (
+                    db.query(User)
+                    .filter(User.id == cookie_user_id, User.is_active.is_(True))
+                    .first()
+                )
+            if user:
+                st.session_state.user = {
+                    "id": user.id,
+                    "email": user.email,
+                    "role": user.role,
+                }
+            else:
+                clear_session_cookie()
+
+if st.session_state.user is None:
     st.warning("Please login first.")
     st.stop()
 

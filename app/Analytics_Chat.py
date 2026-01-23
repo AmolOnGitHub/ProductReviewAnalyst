@@ -33,6 +33,11 @@ from src.llm.response_writer import write_response
 
 from src.tools.validator import validate_tool_call
 from src.tools.execute import run_tool
+from src.auth.session_cookie import (
+    clear_session_cookie,
+    get_user_id_from_cookie,
+    set_session_cookie,
+)
 
 
 RESET_PHRASES = {
@@ -210,6 +215,25 @@ if "conversation_id" not in st.session_state:
 if "compare_pair" not in st.session_state:
     st.session_state.compare_pair = None
 
+if "session_checked" not in st.session_state:
+    st.session_state.session_checked = True
+    if st.session_state.user is None:
+        cookie_user_id = get_user_id_from_cookie()
+        if cookie_user_id is not None:
+            with SessionLocal() as db:
+                user = (
+                    db.query(User)
+                    .filter(User.id == cookie_user_id, User.is_active.is_(True))
+                    .first()
+                )
+            if user:
+                st.session_state.user = {
+                    "id": user.id,
+                    "email": user.email,
+                    "role": user.role,
+                }
+            else:
+                clear_session_cookie()
 
 ## Login Gate
 if st.session_state.user is None:
@@ -238,6 +262,7 @@ if st.session_state.user is None:
                         "email": user.email,
                         "role": user.role,
                     }
+                    set_session_cookie(user.id)
                     st.success("Logged in")
                     st.rerun()
                 else:
@@ -264,6 +289,7 @@ if st.session_state.user["role"] != "admin":
 
 if st.sidebar.button("Logout"):
     st.session_state.user = None
+    clear_session_cookie()
     st.rerun()
 
 
@@ -394,7 +420,6 @@ with right:
     st.header("Chat")
 
     # Scrollable container for chat history
-    # Usually height=600px or so fits well next to graphs.
     chat_container = st.container(height=700)
     with chat_container:
         for msg in st.session_state.chat_messages:
@@ -533,43 +558,52 @@ with right:
                 st.session_state.plot_state["rating_dist_category"] = a
 
 
-            assistant_text = write_response(
-                user_message=user_text,
-                tool_name=validated["tool"],
-                tool_args=validated["args"],
-                tool_result=tool_result,
-                recent_messages=recent_for_router,
-            )
+            llm_error = False
+            try:
+                assistant_text = write_response(
+                    user_message=user_text,
+                    tool_name=validated["tool"],
+                    tool_args=validated["args"],
+                    tool_result=tool_result,
+                    recent_messages=recent_for_router,
+                )
+            except Exception:
+                assistant_text = (
+                    "The language model is temporarily unavailable due to rate limits. "
+                    "Please try again in a moment."
+                )
+                llm_error = True
 
-            # UX overrides
-            if validated["tool"] == "rating_distribution":
-                cat = validated["args"]["category"]
-                assistant_text = f"Updated the rating distribution for **{cat}** — check the plot on the left."
+            if not llm_error:
+                # UX overrides
+                if validated["tool"] == "rating_distribution":
+                    cat = validated["args"]["category"]
+                    assistant_text = f"Updated the rating distribution for **{cat}** — check the plot on the left."
 
-            if validated["tool"] == "metrics_top_categories":
-                tn = validated["args"].get("top_n", st.session_state.top_n)
-                metric = validated["args"].get("metric", st.session_state.top_metric)
-                direction = validated["args"].get("direction", st.session_state.top_direction)
-                metric_labels = {"review_count": "Review Count", "nps": "NPS", "avg_rating": "Average Rating"}
-                metric_label = metric_labels.get(metric, "Review Count")
-                label = "Bottom" if direction == "asc" else "Top"
-                assistant_text = f"Updated to show {label} {tn} categories by **{metric_label}** — check the plot on the left."
+                if validated["tool"] == "metrics_top_categories":
+                    tn = validated["args"].get("top_n", st.session_state.top_n)
+                    metric = validated["args"].get("metric", st.session_state.top_metric)
+                    direction = validated["args"].get("direction", st.session_state.top_direction)
+                    metric_labels = {"review_count": "Review Count", "nps": "NPS", "avg_rating": "Average Rating"}
+                    metric_label = metric_labels.get(metric, "Review Count")
+                    label = "Bottom" if direction == "asc" else "Top"
+                    assistant_text = f"Updated to show {label} {tn} categories by **{metric_label}** — check the plot on the left."
 
-            if validated["tool"] == "compare_categories":
-                a = validated["args"]["category_a"]
-                b = validated["args"]["category_b"]
-                assistant_text = f"Compared **{a}** vs **{b}** across review count, average rating, and NPS — check the chart on the left."
+                if validated["tool"] == "compare_categories":
+                    a = validated["args"]["category_a"]
+                    b = validated["args"]["category_b"]
+                    assistant_text = f"Compared **{a}** vs **{b}** across review count, average rating, and NPS — check the chart on the left."
 
-            assistant_text = apply_state_aware_response(
-                tool=validated["tool"],
-                args=validated["args"],
-                prev_state=prev_state,
-                assistant_text=assistant_text,
-            )
+                assistant_text = apply_state_aware_response(
+                    tool=validated["tool"],
+                    args=validated["args"],
+                    prev_state=prev_state,
+                    assistant_text=assistant_text,
+                )
 
-            refusal_msg = access_refusal_message(validated.get("rationale"))
-            if refusal_msg:
-                assistant_text = f"{refusal_msg}\n\n{assistant_text}"
+                refusal_msg = access_refusal_message(validated.get("rationale"))
+                if refusal_msg:
+                    assistant_text = f"{refusal_msg}\n\n{assistant_text}"
 
             # Log trace
             log_trace(
@@ -584,10 +618,10 @@ with right:
             )
 
         st.session_state.chat_messages.append({"role": "assistant", "content": assistant_text})
-        
-        # Rerun only for plot-updating tools to refresh the charts
-        if validated and validated["tool"] in {"metrics_top_categories", "rating_distribution", "compare_categories"}:
-            st.rerun()
+
+        if llm_error:
+            with chat_container:
+                with st.chat_message("assistant"):
+                    st.write(assistant_text)
         else:
-            # st.rerun() is cleanest to show the new message in the history loop above.
             st.rerun()
